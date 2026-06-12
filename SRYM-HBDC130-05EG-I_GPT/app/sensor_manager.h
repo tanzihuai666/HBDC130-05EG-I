@@ -5,6 +5,14 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#define SENSOR_THRESH_LNR   0x01u
+#define SENSOR_THRESH_LC    0x02u
+#define SENSOR_THRESH_LNC   0x04u
+#define SENSOR_THRESH_UNC   0x08u
+#define SENSOR_THRESH_UC    0x10u
+#define SENSOR_THRESH_UNR   0x20u
+#define SENSOR_THRESH_ALL   0x3Fu
+
 typedef enum {
     SENSOR_KIND_DISCRETE = 0,
     SENSOR_KIND_ANALOG_U8,
@@ -28,6 +36,7 @@ typedef struct {
     uint8_t raw_value;
     uint8_t sensor_status;
     uint16_t event_status;
+    uint8_t threshold_mask;
     uint8_t lnr;
     uint8_t lc;
     uint8_t lnc;
