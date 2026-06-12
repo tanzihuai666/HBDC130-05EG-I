@@ -8,7 +8,7 @@
 #ifndef BSP_FLASH_H
 #define BSP_FLASH_H
 
-#include "gd32f10x.h"
+#include "app_config.h"
 #include <stdint.h>
 #include <stdbool.h>
 
