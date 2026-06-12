@@ -2,32 +2,77 @@
 #include "bsp_gpio.h"
 #include <string.h>
 
+#define I2C_TIMEOUT_SHORT      20000u
+#define I2C_TIMEOUT_LONG       80000u
+
 static bsp_i2c_rx_callback_t g_rx_cb;
 static uint8_t g_rx_buf[BSP_I2C_RX_MAX];
 static volatile uint8_t g_rx_len;
+static volatile bool g_rx_overflow;
+static uint8_t g_own_addr_7bit;
+static uint32_t g_i2c_error_count;
 
-void bsp_i2c1_register_rx_callback(bsp_i2c_rx_callback_t cb)
+static void i2c_clear_addr(void)
 {
-    g_rx_cb = cb;
+    volatile uint16_t tmp;
+    tmp = I2C_ReadRegister(I2C1, I2C_REGISTER_STR1);
+    tmp = I2C_ReadRegister(I2C1, I2C_REGISTER_STR2);
+    (void)tmp;
 }
 
-void bsp_i2c1_ipmb_init(uint8_t own_addr_7bit)
+static void i2c_clear_stop(void)
+{
+    volatile uint16_t tmp;
+    tmp = I2C_ReadRegister(I2C1, I2C_REGISTER_STR1);
+    (void)tmp;
+    I2C_Enable(I2C1, ENABLE);
+}
+
+static bool i2c_wait_flag(uint32_t flag, TypeState state, uint32_t timeout)
+{
+    while (timeout-- > 0u) {
+        if (I2C_GetBitState(I2C1, I2C_FLAG_BE) == SET) return false;
+        if (I2C_GetBitState(I2C1, I2C_FLAG_LOSTARB) == SET) return false;
+        if (I2C_GetBitState(I2C1, I2C_FLAG_AE) == SET) return false;
+        if (I2C_GetBitState(I2C1, flag) == state) return true;
+    }
+    return false;
+}
+
+static void i2c_clear_errors(void)
+{
+    if (I2C_GetBitState(I2C1, I2C_FLAG_BE) == SET) I2C_ClearBitState(I2C1, I2C_FLAG_BE);
+    if (I2C_GetBitState(I2C1, I2C_FLAG_LOSTARB) == SET) I2C_ClearBitState(I2C1, I2C_FLAG_LOSTARB);
+    if (I2C_GetBitState(I2C1, I2C_FLAG_AE) == SET) I2C_ClearBitState(I2C1, I2C_FLAG_AE);
+    if (I2C_GetBitState(I2C1, I2C_FLAG_RXORE) == SET) I2C_ClearBitState(I2C1, I2C_FLAG_RXORE);
+}
+
+static void i2c1_hw_init(uint8_t own_addr_7bit)
 {
     GPIO_InitPara gpio;
+    I2C_InitPara i2c;
     NVIC_InitPara nvic;
-
-    (void)own_addr_7bit;
 
     RCC_APB2PeriphClock_Enable(RCC_APB2PERIPH_GPIOB | RCC_APB2PERIPH_AF, ENABLE);
     RCC_APB1PeriphClock_Enable(RCC_APB1PERIPH_I2C1, ENABLE);
 
-    /* PB6 SCL, PB7 SDA, open-drain AF, 400 kbit/s target. */
     gpio.GPIO_Pin = GPIO_PIN_6 | GPIO_PIN_7;
     gpio.GPIO_Speed = GPIO_SPEED_50MHZ;
     gpio.GPIO_Mode = GPIO_MODE_AF_OD;
     GPIO_Init(GPIOB, &gpio);
 
-    bsp_gpio_set_i2c1_transceiver_enable(true);
+    I2C_DeInit(I2C1);
+    I2C_ParaInit(&i2c);
+    i2c.I2C_Protocol = I2C_PROTOCOL_I2C;
+    i2c.I2C_DutyCycle = I2C_DUTYCYCLE_2;
+    i2c.I2C_BitRate = 400000u;
+    i2c.I2C_AddressingMode = I2C_ADDRESSING_MODE_7BIT;
+    i2c.I2C_DeviceAddress = (uint16_t)(own_addr_7bit << 1);
+    I2C_Init(I2C1, &i2c);
+    I2C_Acknowledge_Enable(I2C1, ENABLE);
+    I2C_StretchClock_Enable(I2C1, ENABLE);
+    I2C_INTConfig(I2C1, (uint16_t)(I2C_INT_EIE | I2C_INT_EE | I2C_INT_BIE), ENABLE);
+    I2C_Enable(I2C1, ENABLE);
 
     nvic.NVIC_IRQ = I2C1_EV_IRQn;
     nvic.NVIC_IRQPreemptPriority = 3u;
@@ -40,26 +85,60 @@ void bsp_i2c1_ipmb_init(uint8_t own_addr_7bit)
     nvic.NVIC_IRQSubPriority = 0u;
     nvic.NVIC_IRQEnable = ENABLE;
     NVIC_Init(&nvic);
+}
 
+void bsp_i2c1_register_rx_callback(bsp_i2c_rx_callback_t cb)
+{
+    g_rx_cb = cb;
+}
+
+void bsp_i2c1_ipmb_init(uint8_t own_addr_7bit)
+{
+    g_own_addr_7bit = own_addr_7bit;
     g_rx_len = 0u;
-
-    /* TODO after Keil package check:
-     * 1. Configure I2C1 as 7-bit slave at own_addr_7bit.
-     * 2. Enable ACK, ADDR/RBNE/STPDET/BERR/ARLO/OVR interrupts.
-     * 3. Enable 400 kbit/s master mode for response writes.
-     *
-     * The wrapper is kept here to isolate GD32 SPL naming differences.
-     */
+    g_rx_overflow = false;
+    bsp_gpio_set_i2c1_transceiver_enable(true);
+    i2c1_hw_init(g_own_addr_7bit);
 }
 
 bool bsp_i2c1_master_write(uint8_t dest_addr_7bit, const uint8_t *data, uint8_t len)
 {
-    (void)dest_addr_7bit;
-    (void)data;
-    (void)len;
+    uint8_t i;
+    bool ok = false;
 
-    /* TODO: implement multi-master transmit with ARLO/NACK retry once SPL naming is verified. */
-    return false;
+    if ((data == 0) || (len == 0u) || (len > BSP_I2C_TX_MAX)) return false;
+
+    I2C_INTConfig(I2C1, (uint16_t)(I2C_INT_EIE | I2C_INT_EE | I2C_INT_BIE), DISABLE);
+    i2c_clear_errors();
+
+    if (i2c_wait_flag(I2C_FLAG_I2CBSY, RESET, I2C_TIMEOUT_LONG)) {
+        I2C_StartOnBus_Enable(I2C1, ENABLE);
+        if (i2c_wait_flag(I2C_FLAG_SBSEND, SET, I2C_TIMEOUT_SHORT)) {
+            I2C_AddressingDevice_7bit(I2C1, (uint8_t)(dest_addr_7bit << 1), I2C_DIRECTION_TRANSMITTER);
+            if (i2c_wait_flag(I2C_FLAG_ADDSEND, SET, I2C_TIMEOUT_SHORT)) {
+                i2c_clear_addr();
+                ok = true;
+                for (i = 0u; i < len; i++) {
+                    if (!i2c_wait_flag(I2C_FLAG_TBE, SET, I2C_TIMEOUT_SHORT)) {
+                        ok = false;
+                        break;
+                    }
+                    I2C_SendData(I2C1, data[i]);
+                }
+                if (ok) {
+                    ok = i2c_wait_flag(I2C_FLAG_BTC, SET, I2C_TIMEOUT_SHORT);
+                }
+            }
+        }
+    }
+
+    I2C_StopOnBus_Enable(I2C1, ENABLE);
+    if (!ok) {
+        g_i2c_error_count++;
+        i2c_clear_errors();
+    }
+    I2C_INTConfig(I2C1, (uint16_t)(I2C_INT_EIE | I2C_INT_EE | I2C_INT_BIE), ENABLE);
+    return ok;
 }
 
 void bsp_i2c1_recover_bus(void)
@@ -67,7 +146,7 @@ void bsp_i2c1_recover_bus(void)
     uint8_t i;
     GPIO_InitPara gpio;
 
-    /* Disable I2C peripheral externally through transceiver, then clock SCL manually. */
+    I2C_Enable(I2C1, DISABLE);
     bsp_gpio_set_i2c1_transceiver_enable(false);
 
     gpio.GPIO_Pin = GPIO_PIN_6 | GPIO_PIN_7;
@@ -75,29 +154,54 @@ void bsp_i2c1_recover_bus(void)
     gpio.GPIO_Mode = GPIO_MODE_OUT_OD;
     GPIO_Init(GPIOB, &gpio);
 
+    GPIO_SetBits(GPIOB, GPIO_PIN_6 | GPIO_PIN_7);
     for (i = 0u; i < 9u; i++) {
         GPIO_ResetBits(GPIOB, GPIO_PIN_6);
-        for (volatile uint32_t d = 0u; d < 200u; d++) { }
+        for (volatile uint32_t d = 0u; d < 300u; d++) { }
         GPIO_SetBits(GPIOB, GPIO_PIN_6);
-        for (volatile uint32_t d = 0u; d < 200u; d++) { }
+        for (volatile uint32_t d = 0u; d < 300u; d++) { }
     }
 
     bsp_gpio_set_i2c1_transceiver_enable(true);
+    i2c1_hw_init(g_own_addr_7bit);
+}
+
+uint32_t bsp_i2c1_get_error_count(void)
+{
+    return g_i2c_error_count;
 }
 
 void I2C1_EV_IRQHandler(void)
 {
-    /* TODO: use GD32 I2C event flags to collect slave RX bytes into g_rx_buf.
-     * On STOP condition call g_rx_cb(g_rx_buf, g_rx_len).
-     */
-    if ((g_rx_cb != 0) && (g_rx_len > 0u)) {
-        g_rx_cb(g_rx_buf, g_rx_len);
+    if (I2C_GetIntBitState(I2C1, I2C_INT_ADDSEND) == SET) {
+        i2c_clear_addr();
         g_rx_len = 0u;
+        g_rx_overflow = false;
+    }
+
+    if (I2C_GetIntBitState(I2C1, I2C_INT_RBNE) == SET) {
+        uint8_t b = I2C_ReceiveData(I2C1);
+        if (g_rx_len < BSP_I2C_RX_MAX) {
+            g_rx_buf[g_rx_len++] = b;
+        } else {
+            g_rx_overflow = true;
+        }
+    }
+
+    if (I2C_GetIntBitState(I2C1, I2C_INT_STPSEND) == SET) {
+        i2c_clear_stop();
+        if ((!g_rx_overflow) && (g_rx_len > 0u) && (g_rx_cb != 0)) {
+            g_rx_cb(g_rx_buf, g_rx_len);
+        }
+        g_rx_len = 0u;
+        g_rx_overflow = false;
     }
 }
 
 void I2C1_ER_IRQHandler(void)
 {
-    /* TODO: clear BERR/ARLO/OVR/NACK flags according to GD32 SPL names. */
+    g_i2c_error_count++;
+    i2c_clear_errors();
     g_rx_len = 0u;
+    g_rx_overflow = false;
 }
