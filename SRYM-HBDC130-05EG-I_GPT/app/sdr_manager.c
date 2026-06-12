@@ -1,16 +1,22 @@
+/* File: sdr_manager.c
+ * Module: build and read IPMI Device SDR records.
+ */
 #include "sdr_manager.h"
 #include "sensor_manager.h"
 #include <string.h>
 
+/* SDR record buffers and per-record lengths. */
 static uint8_t g_sdr[SDR_RECORD_COUNT][SDR_MAX_RECORD_SIZE];
 static uint8_t g_sdr_len[SDR_RECORD_COUNT];
 static uint16_t g_reservation = 1u;
 
+/* Encode Rexp and Bexp into one SDR byte. */
 static uint8_t sdr_encode_exp(int8_t r_exp, int8_t b_exp)
 {
     return (uint8_t)(((b_exp & 0x0F) << 4) | (r_exp & 0x0F));
 }
 
+/* Append sensor name into SDR compact string format. */
 static uint8_t put_name(uint8_t *r, uint8_t pos, const char *name)
 {
     uint8_t len = (uint8_t)strlen(name);
@@ -20,11 +26,13 @@ static uint8_t put_name(uint8_t *r, uint8_t pos, const char *name)
     return (uint8_t)(pos + len);
 }
 
+/* Extract high two bits of signed 10-bit M/B field. */
 static uint8_t sdr_msb10(int16_t v)
 {
     return (uint8_t)(((uint16_t)v >> 8) & 0x03u);
 }
 
+/* Build one full sensor record from one sensor table item. */
 static void make_record(uint8_t idx, uint8_t owner, uint8_t entity_instance)
 {
     const ipmi_sensor_t *s;
@@ -56,21 +64,10 @@ static void make_record(uint8_t idx, uint8_t owner, uint8_t entity_instance)
     r[12] = s->sensor_type;
     r[13] = s->reading_type;
 
-    /* Event/threshold masks. For analog sensors mirror readable thresholds into assertion masks. */
     if (s->kind == SENSOR_KIND_DISCRETE) {
-        r[14] = 0x3Fu;
-        r[15] = 0x00u;
-        r[16] = 0x3Fu;
-        r[17] = 0x00u;
-        r[18] = 0x00u;
-        r[19] = 0x00u;
+        r[14] = 0x3Fu; r[15] = 0x00u; r[16] = 0x3Fu; r[17] = 0x00u; r[18] = 0x00u; r[19] = 0x00u;
     } else {
-        r[14] = threshold_mask;
-        r[15] = 0x00u;
-        r[16] = threshold_mask;
-        r[17] = 0x00u;
-        r[18] = 0x00u;
-        r[19] = threshold_mask;
+        r[14] = threshold_mask; r[15] = 0x00u; r[16] = threshold_mask; r[17] = 0x00u; r[18] = 0x00u; r[19] = threshold_mask;
     }
 
     r[20] = (s->kind == SENSOR_KIND_ANALOG_S8) ? 0x80u : 0x00u;
@@ -105,19 +102,23 @@ static void make_record(uint8_t idx, uint8_t owner, uint8_t entity_instance)
     g_sdr_len[idx] = pos;
 }
 
+/* Initialize all SDR records. */
 void sdr_manager_init(uint8_t owner_addr_8bit, uint8_t entity_instance)
 {
     uint8_t i;
     for (i = 0u; i < SDR_RECORD_COUNT; i++) {
         make_record(i, owner_addr_8bit, entity_instance);
     }
+    APP_LOGI("sdr init count=%u", SDR_RECORD_COUNT);
 }
 
+/* Return SDR record count. */
 uint8_t sdr_get_count(void)
 {
     return SDR_RECORD_COUNT;
 }
 
+/* Allocate next reservation ID. */
 uint16_t sdr_reserve(void)
 {
     g_reservation++;
@@ -125,6 +126,7 @@ uint16_t sdr_reserve(void)
     return g_reservation;
 }
 
+/* Read a section of one SDR record. */
 uint8_t sdr_read_record(uint16_t record_id, uint8_t offset, uint8_t count, uint8_t *next_lsb, uint8_t *next_msb, uint8_t *out)
 {
     uint8_t idx;
