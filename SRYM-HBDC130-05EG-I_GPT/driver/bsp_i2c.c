@@ -1,7 +1,15 @@
+/**
+ * @file    bsp_i2c.c
+ * @brief   I2C1/IPMB 板级驱动。I2C1 用作 IPMB 7-bit 从机接收请求，并在主循环中切为 Master 写响应。
+ * @author  GPT
+ * @date    2026-06-12
+ * @version V0.3
+ */
 #include "bsp_i2c.h"
 #include "bsp_gpio.h"
 #include <string.h>
 
+/* 等待 I2C 标志的超时计数，避免总线异常时死等。 */
 #define I2C_TIMEOUT_SHORT      20000u
 #define I2C_TIMEOUT_LONG       80000u
 
@@ -12,6 +20,7 @@ static volatile bool g_rx_overflow;
 static uint8_t g_own_addr_7bit;
 static uint32_t g_i2c_error_count;
 
+/** @brief 读 STR1/STR2 清除地址匹配状态。 */
 static void i2c_clear_addr(void)
 {
     volatile uint16_t tmp;
@@ -20,6 +29,7 @@ static void i2c_clear_addr(void)
     (void)tmp;
 }
 
+/** @brief 清除 STOP 检测状态并保持 I2C 使能。 */
 static void i2c_clear_stop(void)
 {
     volatile uint16_t tmp;
@@ -28,6 +38,7 @@ static void i2c_clear_stop(void)
     I2C_Enable(I2C1, ENABLE);
 }
 
+/** @brief 等待指定标志达到目标状态。 */
 static bool i2c_wait_flag(uint32_t flag, TypeState state, uint32_t timeout)
 {
     while (timeout-- > 0u) {
@@ -39,6 +50,7 @@ static bool i2c_wait_flag(uint32_t flag, TypeState state, uint32_t timeout)
     return false;
 }
 
+/** @brief 清除 I2C 错误标志。 */
 static void i2c_clear_errors(void)
 {
     if (I2C_GetBitState(I2C1, I2C_FLAG_BE) == SET) I2C_ClearBitState(I2C1, I2C_FLAG_BE);
@@ -47,6 +59,7 @@ static void i2c_clear_errors(void)
     if (I2C_GetBitState(I2C1, I2C_FLAG_RXORE) == SET) I2C_ClearBitState(I2C1, I2C_FLAG_RXORE);
 }
 
+/** @brief 初始化 I2C1 GPIO、外设和中断。 */
 static void i2c1_hw_init(uint8_t own_addr_7bit)
 {
     GPIO_InitPara gpio;
@@ -87,11 +100,13 @@ static void i2c1_hw_init(uint8_t own_addr_7bit)
     NVIC_Init(&nvic);
 }
 
+/** @brief 注册从机接收完成回调。 */
 void bsp_i2c1_register_rx_callback(bsp_i2c_rx_callback_t cb)
 {
     g_rx_cb = cb;
 }
 
+/** @brief 初始化 I2C1 IPMB。 */
 void bsp_i2c1_ipmb_init(uint8_t own_addr_7bit)
 {
     g_own_addr_7bit = own_addr_7bit;
@@ -99,8 +114,10 @@ void bsp_i2c1_ipmb_init(uint8_t own_addr_7bit)
     g_rx_overflow = false;
     bsp_gpio_set_i2c1_transceiver_enable(true);
     i2c1_hw_init(g_own_addr_7bit);
+    APP_LOGI("i2c1 init own7=0x%02X", own_addr_7bit);
 }
 
+/** @brief 主机写响应帧。 */
 bool bsp_i2c1_master_write(uint8_t dest_addr_7bit, const uint8_t *data, uint8_t len)
 {
     uint8_t i;
@@ -125,9 +142,7 @@ bool bsp_i2c1_master_write(uint8_t dest_addr_7bit, const uint8_t *data, uint8_t 
                     }
                     I2C_SendData(I2C1, data[i]);
                 }
-                if (ok) {
-                    ok = i2c_wait_flag(I2C_FLAG_BTC, SET, I2C_TIMEOUT_SHORT);
-                }
+                if (ok) ok = i2c_wait_flag(I2C_FLAG_BTC, SET, I2C_TIMEOUT_SHORT);
             }
         }
     }
@@ -141,11 +156,13 @@ bool bsp_i2c1_master_write(uint8_t dest_addr_7bit, const uint8_t *data, uint8_t 
     return ok;
 }
 
+/** @brief 恢复总线并重新初始化 I2C1。 */
 void bsp_i2c1_recover_bus(void)
 {
     uint8_t i;
     GPIO_InitPara gpio;
 
+    APP_LOGW("i2c1 recover bus");
     I2C_Enable(I2C1, DISABLE);
     bsp_gpio_set_i2c1_transceiver_enable(false);
 
@@ -166,11 +183,13 @@ void bsp_i2c1_recover_bus(void)
     i2c1_hw_init(g_own_addr_7bit);
 }
 
+/** @brief 获取 I2C 错误计数。 */
 uint32_t bsp_i2c1_get_error_count(void)
 {
     return g_i2c_error_count;
 }
 
+/** @brief I2C1 事件中断，处理地址匹配、接收字节和 STOP。 */
 void I2C1_EV_IRQHandler(void)
 {
     if (I2C_GetIntBitState(I2C1, I2C_INT_ADDSEND) == SET) {
@@ -178,26 +197,20 @@ void I2C1_EV_IRQHandler(void)
         g_rx_len = 0u;
         g_rx_overflow = false;
     }
-
     if (I2C_GetIntBitState(I2C1, I2C_INT_RBNE) == SET) {
         uint8_t b = I2C_ReceiveData(I2C1);
-        if (g_rx_len < BSP_I2C_RX_MAX) {
-            g_rx_buf[g_rx_len++] = b;
-        } else {
-            g_rx_overflow = true;
-        }
+        if (g_rx_len < BSP_I2C_RX_MAX) g_rx_buf[g_rx_len++] = b;
+        else g_rx_overflow = true;
     }
-
     if (I2C_GetIntBitState(I2C1, I2C_INT_STPSEND) == SET) {
         i2c_clear_stop();
-        if ((!g_rx_overflow) && (g_rx_len > 0u) && (g_rx_cb != 0)) {
-            g_rx_cb(g_rx_buf, g_rx_len);
-        }
+        if ((!g_rx_overflow) && (g_rx_len > 0u) && (g_rx_cb != 0)) g_rx_cb(g_rx_buf, g_rx_len);
         g_rx_len = 0u;
         g_rx_overflow = false;
     }
 }
 
+/** @brief I2C1 错误中断，只清标志和复位接收状态。 */
 void I2C1_ER_IRQHandler(void)
 {
     g_i2c_error_count++;
