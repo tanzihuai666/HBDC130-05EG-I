@@ -18,7 +18,9 @@ void power_ctrl_task_1ms(void);
 void power_ctrl_force_off(void);
 power_state_t power_ctrl_get_state(void);
 bool power_ctrl_enable_active(void);
+bool power_ctrl_inhibit_active(void);
 bool power_ctrl_nvmro_allows_update(void);
+bool power_ctrl_input_voltage_ok(void);
 uint8_t power_ctrl_get_ga_id(void);
 uint8_t power_ctrl_get_ipmb_addr_8bit(void);
 
