@@ -1,0 +1,6 @@
+{
+    "files.associations": {
+        "math.h": "c",
+        "gd32f10x_adc.h": "c"
+    }
+}

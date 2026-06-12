@@ -1,0 +1,76 @@
+<html>
+<body>
+<pre>
+<h1>µVision Build Log</h1>
+<h2>Tool Versions:</h2>
+IDE-Version: ¦ÌVision V5.37.0.0
+Copyright (C) 2022 ARM Ltd and ARM Germany GmbH. All rights reserved.
+License Information: 11 yiyi, 11, LIC=PE7DL-0YLHL-2Z7W4-FLMGF-0VQYZ-8B1WB
+ 
+Tool Versions:
+Toolchain:       MDK-ARM Plus  Version: 5.37.0.0
+Toolchain Path:  C:\Keil_v5\ARM\ARMCC\Bin
+C Compiler:      Armcc.exe V5.05 update 1 (build 106)
+Assembler:       Armasm.exe V5.05 update 1 (build 106)
+Linker/Locator:  ArmLink.exe V5.05 update 1 (build 106)
+Library Manager: ArmAr.exe V5.05 update 1 (build 106)
+Hex Converter:   FromElf.exe V5.05 update 1 (build 106)
+CPU DLL:         SARMCM3.DLL V5.37.0.0
+Dialog DLL:      DCM.DLL V1.17.5.0
+Target DLL:      Segger\JL2CM3.dll V2.99.42.0
+Dialog DLL:      TCM.DLL V1.56.1.0
+ 
+<h2>Project:</h2>
+D:\work\my\HBDC130-05EG-I\SRYM-HBDC130-05EG-I_V1.0\project\HBDC130-05EG-I.uvprojx
+Project File Date:  06/11/2026
+
+<h2>Output:</h2>
+*** Using Compiler 'V5.05 update 1 (build 106)', folder: 'C:\Keil_v5\ARM\ARMCC\Bin'
+Rebuild target 'Target 1'
+assembling startup_gd32f10x_hd.s...
+compiling main.c...
+compiling drv_uart.c...
+compiling drv_Init.c...
+compiling App_Adc.c...
+compiling drv_IO.c...
+compiling App_Uart.c...
+..\app\App_Uart.c(10): warning:  #550-D: variable "RX_Temp" was set but never used
+  	uint8_t RX_Temp;
+..\app\App_Uart.c: 1 warning, 0 errors
+compiling drv_adc.c...
+..\driver\drv_adc.c(77): warning:  #177-D: function "ADC_AdcConfig" was declared but never referenced
+  static void ADC_AdcConfig(void)
+..\driver\drv_adc.c: 1 warning, 0 errors
+compiling drv_Timer.c...
+compiling gd32f10x_adc.c...
+compiling gd32f10x_dma.c...
+compiling gd32f10x_exti.c...
+compiling gd32f10x_iwdg.c...
+compiling gd32f10x_gpio.c...
+compiling gd32f10x_misc.c...
+compiling gd32f10x_i2c.c...
+compiling gd32f10x_rcc.c...
+compiling core_cm3.c...
+compiling gd32f10x_timer.c...
+compiling system_gd32f10x.c...
+compiling gd32f10x_usart.c...
+compiling gd32f10x_fmc.c...
+linking...
+Program Size: Code=688 RO-data=320 RW-data=0 ZI-data=1040  
+"..\object\TestLED.axf" - 0 Error(s), 2 Warning(s).
+
+<h2>Software Packages used:</h2>
+
+Package Vendor: GigaDevice
+                http://www.keil.com/pack/GigaDevice.GD32F10x_DFP.2.0.1.pack
+                GigaDevice.GD32F10x_DFP.2.0.1
+                GigaDevice GD32F10x Series Device Support and Examples
+
+<h2>Collection of Component include folders:</h2>
+  C:/Keil_v5/ARM/Pack/GigaDevice/GD32F10x_DFP/2.0.1/Device/Include
+
+<h2>Collection of Component Files used:</h2>
+Build Time Elapsed:  00:00:02
+</pre>
+</body>
+</html>

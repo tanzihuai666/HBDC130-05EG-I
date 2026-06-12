@@ -1,0 +1,27 @@
+--cpu Cortex-M3
+"..\object\startup_gd32f10x_hd.o"
+"..\object\main.o"
+"..\object\app_adc.o"
+"..\object\app_uart.o"
+"..\object\drv_adc.o"
+"..\object\drv_init.o"
+"..\object\drv_io.o"
+"..\object\drv_uart.o"
+"..\object\drv_timer.o"
+"..\object\gd32f10x_adc.o"
+"..\object\gd32f10x_dma.o"
+"..\object\gd32f10x_exti.o"
+"..\object\gd32f10x_gpio.o"
+"..\object\gd32f10x_i2c.o"
+"..\object\gd32f10x_iwdg.o"
+"..\object\gd32f10x_misc.o"
+"..\object\gd32f10x_rcc.o"
+"..\object\gd32f10x_timer.o"
+"..\object\gd32f10x_usart.o"
+"..\object\core_cm3.o"
+"..\object\system_gd32f10x.o"
+"..\object\gd32f10x_fmc.o"
+--library_type=microlib --strict --scatter "..\object\TestLED.sct"
+--summary_stderr --info summarysizes --map --load_addr_map_info --xref --callgraph --symbols
+--info sizes --info totals --info unused --info veneers
+--list ".\TestLED.map" -o ..\object\TestLED.axf
