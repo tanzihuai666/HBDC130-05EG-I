@@ -1,9 +1,19 @@
+/**
+ * @file    fru_manager.c
+ * @brief   IPMI FRU 数据生成与读取。
+ *          生成 Common Header、Board Info Area、Product Info Area，并按 IPMI Read FRU Data
+ *          命令要求提供分段读取接口。
+ * @author  GPT
+ * @date    2026-06-12
+ * @version V0.3
+ */
 #include "fru_manager.h"
 #include <string.h>
 
-static uint8_t g_fru[FRU_AREA_MAX_SIZE];
-static uint16_t g_fru_size;
+static uint8_t g_fru[FRU_AREA_MAX_SIZE]; /* FRU 镜像缓存。 */
+static uint16_t g_fru_size;              /* 当前 FRU 有效长度。 */
 
+/** @brief 计算 IPMI 8-bit checksum。@param p 数据指针。@param n 长度。@retval checksum。 */
 static uint8_t checksum8(const uint8_t *p, uint16_t n)
 {
     uint8_t s = 0u;
@@ -12,6 +22,7 @@ static uint8_t checksum8(const uint8_t *p, uint16_t n)
     return (uint8_t)(0u - s);
 }
 
+/** @brief 校验区域累加和是否为 0。@param p 数据指针。@param n 长度。@retval 累加和。 */
 static uint8_t verify_sum0(const uint8_t *p, uint16_t n)
 {
     uint8_t s = 0u;
@@ -20,6 +31,7 @@ static uint8_t verify_sum0(const uint8_t *p, uint16_t n)
     return s;
 }
 
+/** @brief 追加 FRU 字符串字段，类型为 8-bit ASCII/Latin。 */
 static uint16_t append_field(uint16_t pos, const char *s)
 {
     uint8_t len = (uint8_t)strlen(s);
@@ -29,12 +41,13 @@ static uint16_t append_field(uint16_t pos, const char *s)
     return (uint16_t)(pos + len);
 }
 
+/** @brief 补齐区域到 8 字节对齐并写入 area length/checksum。 */
 static uint16_t align_area(uint16_t start, uint16_t pos)
 {
     uint16_t len_with_checksum;
     uint16_t pad;
 
-    g_fru[pos++] = 0xC1u;
+    g_fru[pos++] = 0xC1u; /* End of fields marker. */
     len_with_checksum = (uint16_t)(pos - start + 1u);
     pad = (uint16_t)((8u - (len_with_checksum & 7u)) & 7u);
     while (pad-- > 0u) g_fru[pos++] = 0u;
@@ -44,14 +57,15 @@ static uint16_t align_area(uint16_t start, uint16_t pos)
     return (uint16_t)(pos + 1u);
 }
 
+/** @brief 构建 Board Info Area。 */
 static uint16_t build_board_area(uint16_t start)
 {
     uint16_t pos = start;
 
-    g_fru[pos++] = 0x01u;  /* Format version. */
-    g_fru[pos++] = 0x00u;  /* Area length placeholder. */
-    g_fru[pos++] = 0x00u;  /* Language code: English. */
-    g_fru[pos++] = 0x00u;  /* Mfg time, minutes since 1996-01-01, LSB. */
+    g_fru[pos++] = 0x01u;
+    g_fru[pos++] = 0x00u;
+    g_fru[pos++] = 0x00u;
+    g_fru[pos++] = 0x00u;
     g_fru[pos++] = 0x00u;
     g_fru[pos++] = 0x00u;
     pos = append_field(pos, "TBD");
@@ -62,13 +76,14 @@ static uint16_t build_board_area(uint16_t start)
     return align_area(start, pos);
 }
 
+/** @brief 构建 Product Info Area。 */
 static uint16_t build_product_area(uint16_t start)
 {
     uint16_t pos = start;
 
-    g_fru[pos++] = 0x01u;  /* Format version. */
-    g_fru[pos++] = 0x00u;  /* Area length placeholder. */
-    g_fru[pos++] = 0x00u;  /* Language code: English. */
+    g_fru[pos++] = 0x01u;
+    g_fru[pos++] = 0x00u;
+    g_fru[pos++] = 0x00u;
     pos = append_field(pos, "TBD");
     pos = append_field(pos, "HBDC130-05EG-I Power Module");
     pos = append_field(pos, "HBDC130-05EG-I");
@@ -79,6 +94,7 @@ static uint16_t build_product_area(uint16_t start)
     return align_area(start, pos);
 }
 
+/** @brief 初始化 FRU 镜像。 */
 void fru_manager_init(void)
 {
     uint16_t board_start;
@@ -86,10 +102,8 @@ void fru_manager_init(void)
     uint16_t pos;
 
     memset(g_fru, 0, sizeof(g_fru));
-
     board_start = 8u;
     pos = build_board_area(board_start);
-
     product_start = pos;
     pos = build_product_area(product_start);
 
@@ -103,19 +117,25 @@ void fru_manager_init(void)
     g_fru[7] = checksum8(g_fru, 7u);
 
     g_fru_size = pos;
+    APP_LOGI("fru: init size=%u board=%u product=%u", g_fru_size, board_start, product_start);
 }
 
+/** @brief 获取 FRU 总长度。 */
 uint16_t fru_get_area_size(void)
 {
     return g_fru_size;
 }
 
+/** @brief 分段读取 FRU 数据。 */
 uint8_t fru_read(uint16_t offset, uint8_t count, uint8_t *out)
 {
     uint8_t n;
 
     if ((out == 0) || (count == 0u) || (offset >= g_fru_size)) return 0u;
-    if (verify_sum0(g_fru, 8u) != 0u) return 0u;
+    if (verify_sum0(g_fru, 8u) != 0u) {
+        APP_LOGE("fru: header checksum error");
+        return 0u;
+    }
 
     n = count;
     if (n > IPMB_MAX_READ_CHUNK) n = IPMB_MAX_READ_CHUNK;
