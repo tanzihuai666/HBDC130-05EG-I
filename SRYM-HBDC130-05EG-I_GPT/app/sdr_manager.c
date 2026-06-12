@@ -20,12 +20,18 @@ static uint8_t put_name(uint8_t *r, uint8_t pos, const char *name)
     return (uint8_t)(pos + len);
 }
 
+static uint8_t sdr_msb10(int16_t v)
+{
+    return (uint8_t)(((uint16_t)v >> 8) & 0x03u);
+}
+
 static void make_record(uint8_t idx, uint8_t owner, uint8_t entity_instance)
 {
     const ipmi_sensor_t *s;
     uint8_t *r;
     uint8_t pos;
     uint16_t record_id;
+    uint8_t threshold_mask;
 
     s = sensor_get((uint8_t)(idx + 1u));
     if (s == 0) return;
@@ -33,6 +39,7 @@ static void make_record(uint8_t idx, uint8_t owner, uint8_t entity_instance)
     r = g_sdr[idx];
     memset(r, 0, SDR_MAX_RECORD_SIZE);
     record_id = (uint16_t)(idx + 1u);
+    threshold_mask = s->threshold_mask;
 
     r[0] = (uint8_t)(record_id & 0xFFu);
     r[1] = (uint8_t)(record_id >> 8);
@@ -48,20 +55,32 @@ static void make_record(uint8_t idx, uint8_t owner, uint8_t entity_instance)
     r[11] = (s->kind == SENSOR_KIND_DISCRETE) ? 0x40u : 0x68u;
     r[12] = s->sensor_type;
     r[13] = s->reading_type;
-    r[14] = (s->kind == SENSOR_KIND_DISCRETE) ? 0x3Fu : 0x3Fu;
-    r[15] = 0x00u;
-    r[16] = 0x00u;
-    r[17] = 0x00u;
-    r[18] = 0x00u;
-    r[19] = 0x00u;
+
+    /* Event/threshold masks. For analog sensors mirror readable thresholds into assertion masks. */
+    if (s->kind == SENSOR_KIND_DISCRETE) {
+        r[14] = 0x3Fu;
+        r[15] = 0x00u;
+        r[16] = 0x3Fu;
+        r[17] = 0x00u;
+        r[18] = 0x00u;
+        r[19] = 0x00u;
+    } else {
+        r[14] = threshold_mask;
+        r[15] = 0x00u;
+        r[16] = threshold_mask;
+        r[17] = 0x00u;
+        r[18] = 0x00u;
+        r[19] = threshold_mask;
+    }
+
     r[20] = (s->kind == SENSOR_KIND_ANALOG_S8) ? 0x80u : 0x00u;
     r[21] = s->base_unit;
     r[22] = 0x00u;
     r[23] = 0x00u;
     r[24] = (uint8_t)(s->m & 0xFF);
-    r[25] = (uint8_t)((s->m >> 8) & 0x03);
+    r[25] = sdr_msb10(s->m);
     r[26] = (uint8_t)(s->b & 0xFF);
-    r[27] = (uint8_t)((s->b >> 8) & 0x03);
+    r[27] = sdr_msb10(s->b);
     r[28] = 0x00u;
     r[29] = sdr_encode_exp(s->r_exp, s->b_exp);
     r[30] = 0x00u;
