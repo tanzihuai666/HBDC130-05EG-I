@@ -2,6 +2,7 @@
 #include "sensor_manager.h"
 #include "sdr_manager.h"
 #include "fru_manager.h"
+#include "fault_manager.h"
 #include <string.h>
 
 static uint8_t g_own_addr_8bit;
@@ -49,8 +50,13 @@ static uint8_t cmd_get_device_id(ipmi_response_t *rsp)
 
 static uint8_t cmd_get_self_test(ipmi_response_t *rsp)
 {
-    rsp->data[0] = 0x55u;
-    rsp->data[1] = 0x00u;
+    if (fault_manager_has_active_fault()) {
+        rsp->data[0] = 0x57u; /* Self-test/device-specific error present. */
+        rsp->data[1] = (uint8_t)(fault_manager_get_bits() & 0xFFu);
+    } else {
+        rsp->data[0] = 0x55u;
+        rsp->data[1] = 0x00u;
+    }
     rsp->data_len = 2u;
     return IPMI_CC_OK;
 }
@@ -94,7 +100,7 @@ static uint8_t cmd_get_sensor_thresholds(const ipmi_request_t *req, ipmi_respons
     if (s == 0) return IPMI_CC_NOT_PRESENT;
     if (s->kind == SENSOR_KIND_DISCRETE) return IPMI_CC_INVALID_CMD;
 
-    rsp->data[0] = 0x3Fu;
+    rsp->data[0] = s->threshold_mask;
     rsp->data[1] = s->lnr;
     rsp->data[2] = s->lc;
     rsp->data[3] = s->lnc;
