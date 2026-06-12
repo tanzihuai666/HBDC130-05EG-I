@@ -1,11 +1,22 @@
+/**
+ * @file    sensor_manager.c
+ * @brief   IPMI 传感器表、工程量到 raw 的换算、阈值事件计算。
+ *          本文件维护 20 个传感器：3 个离散状态传感器、13 个 ADC/功耗模拟量传感器，
+ *          并向 SDR/FRU/IPMI 命令分发层提供统一数据源。
+ * @author  GPT
+ * @date    2026-06-12
+ * @version V0.3
+ */
 #include "sensor_manager.h"
 
-#define UNIT_DEG_K       0x07u
-#define UNIT_VOLTS       0x04u
-#define UNIT_AMPS        0x05u
-#define UNIT_WATTS       0x06u
-#define ENTITY_POWER     0x0Au
+/* IPMI 单位编码，取值按 IPMI SDR Base Unit 定义。 */
+#define UNIT_DEG_K       0x07u  /* Kelvin，温度传感器按 IPMI 常用 K 上报。 */
+#define UNIT_VOLTS       0x04u  /* Volt。 */
+#define UNIT_AMPS        0x05u  /* Ampere。 */
+#define UNIT_WATTS       0x06u  /* Watt。 */
+#define ENTITY_POWER     0x0Au  /* Entity ID: Power Supply。 */
 
+/* ADC 工程量快照。由主循环每 10ms 写入，100ms 刷新到 IPMI raw。 */
 static float g_vin_v = 28.0f;
 static float g_v12_v = 12.0f;
 static float g_v5_v = 5.0f;
@@ -18,64 +29,55 @@ static float g_i33_a = 1.0f;
 static float g_i5_a = 1.0f;
 static float g_temp_c = 25.0f;
 
-static ipmi_sensor_t g_sensors[SENSOR_COUNT];
+static ipmi_sensor_t g_sensors[SENSOR_COUNT]; /* IPMI 传感器数据库。 */
 
+/** @brief 限幅到 uint8_t。@param v 输入整数。@retval 0~255。 */
 static uint8_t clamp_u8(int v)
 {
-    if (v < 0) {
-        return 0u;
-    }
-    if (v > 255) {
-        return 255u;
-    }
+    if (v < 0) return 0u;
+    if (v > 255) return 255u;
     return (uint8_t)v;
 }
 
+/** @brief 计算 10 的正整数次幂。@param exp 指数。@retval 10^exp，exp<=0 时返回 1。 */
 static int pow10_int(int8_t exp)
 {
     int r = 1;
     int8_t i;
-    if (exp <= 0) {
-        return 1;
-    }
-    for (i = 0; i < exp; i++) {
-        r *= 10;
-    }
+    if (exp <= 0) return 1;
+    for (i = 0; i < exp; i++) r *= 10;
     return r;
 }
 
+/**
+ * @brief  按 SDR 线性公式把工程量换算为 raw。
+ * @param  s     传感器描述。
+ * @param  value 工程量。
+ * @retval raw 读数。
+ */
 uint8_t sensor_eng_to_raw(const ipmi_sensor_t *s, float value)
 {
     float scale;
     float raw_f;
     int raw_i;
 
-    if ((s == 0) || (s->m == 0)) {
-        return 0u;
-    }
+    if ((s == 0) || (s->m == 0)) return 0u;
 
-    if (s->r_exp < 0) {
-        scale = 1.0f / (float)pow10_int((int8_t)(-s->r_exp));
-    } else {
-        scale = (float)pow10_int(s->r_exp);
-    }
+    if (s->r_exp < 0) scale = 1.0f / (float)pow10_int((int8_t)(-s->r_exp));
+    else scale = (float)pow10_int(s->r_exp);
 
     raw_f = (value / scale - (float)s->b) / (float)s->m;
-    if (raw_f >= 0.0f) {
-        raw_i = (int)(raw_f + 0.5f);
-    } else {
-        raw_i = (int)(raw_f - 0.5f);
-    }
+    raw_i = (raw_f >= 0.0f) ? (int)(raw_f + 0.5f) : (int)(raw_f - 0.5f);
 
     if (s->kind == SENSOR_KIND_ANALOG_S8) {
         if (raw_i < -128) raw_i = -128;
         if (raw_i > 127) raw_i = 127;
         return (uint8_t)((int8_t)raw_i);
     }
-
     return clamp_u8(raw_i);
 }
 
+/** @brief 初始化单个传感器描述。 */
 static void sensor_init_one(uint8_t idx, uint8_t id, const char *name, uint8_t type, uint8_t rtype,
                             sensor_kind_t kind, uint8_t unit, int16_t m, int16_t b, int8_t rexp)
 {
@@ -101,6 +103,7 @@ static void sensor_init_one(uint8_t idx, uint8_t id, const char *name, uint8_t t
     g_sensors[idx].unr = 0u;
 }
 
+/** @brief 按 Sensor ID 查找可写传感器对象。 */
 static ipmi_sensor_t *sensor_get_mutable(uint8_t sensor_id)
 {
     uint8_t i;
@@ -110,6 +113,10 @@ static ipmi_sensor_t *sensor_get_mutable(uint8_t sensor_id)
     return 0;
 }
 
+/**
+ * @brief  以工程量形式设置阈值并立即转换为 raw。
+ * @note   mask 用来区分阈值 0 和阈值未配置，避免审查报告指出的全零失效问题。
+ */
 static void set_thresholds_eng(uint8_t sensor_id, uint8_t mask,
                                float lnr, float lc, float lnc, float unc, float uc, float unr)
 {
@@ -125,6 +132,7 @@ static void set_thresholds_eng(uint8_t sensor_id, uint8_t mask,
     if (mask & SENSOR_THRESH_UNR) s->unr = sensor_eng_to_raw(s, unr);
 }
 
+/** @brief 初始化所有模拟量阈值。 */
 static void sensor_thresholds_init(void)
 {
     set_thresholds_eng(0x04u, SENSOR_THRESH_ALL, 9.0f, 10.0f, 12.0f, 36.0f, 38.0f, 40.0f);
@@ -133,24 +141,16 @@ static void sensor_thresholds_init(void)
     set_thresholds_eng(0x07u, SENSOR_THRESH_ALL, 2.64f, 2.80f, 2.97f, 3.63f, 3.80f, 3.96f);
     set_thresholds_eng(0x08u, SENSOR_THRESH_ALL, -9.6f, -10.2f, -10.8f, -13.2f, -13.8f, -14.4f);
     set_thresholds_eng(0x09u, SENSOR_THRESH_ALL, 22.4f, 23.8f, 25.2f, 30.8f, 32.0f, 33.6f);
-
-    set_thresholds_eng(0x0Au, SENSOR_THRESH_UNC | SENSOR_THRESH_UC | SENSOR_THRESH_UNR,
-                       0.0f, 0.0f, 0.0f, 4.0f, 5.0f, 6.0f);
-    set_thresholds_eng(0x0Bu, SENSOR_THRESH_UNC | SENSOR_THRESH_UC | SENSOR_THRESH_UNR,
-                       0.0f, 0.0f, 0.0f, 8.8f, 12.0f, 16.0f);
-    set_thresholds_eng(0x0Cu, SENSOR_THRESH_UNC | SENSOR_THRESH_UC | SENSOR_THRESH_UNR,
-                       0.0f, 0.0f, 0.0f, 4.4f, 6.0f, 8.0f);
-    set_thresholds_eng(0x0Du, SENSOR_THRESH_UNC | SENSOR_THRESH_UC | SENSOR_THRESH_UNR,
-                       0.0f, 0.0f, 0.0f, 2.2f, 3.0f, 4.0f);
-
-    set_thresholds_eng(0x0Eu, SENSOR_THRESH_LNC | SENSOR_THRESH_UNC | SENSOR_THRESH_UC | SENSOR_THRESH_UNR,
-                       0.0f, 0.0f, 218.0f, 358.0f, 373.0f, 383.0f);
-    set_thresholds_eng(0x0Fu, SENSOR_THRESH_LNC | SENSOR_THRESH_UNC | SENSOR_THRESH_UC | SENSOR_THRESH_UNR,
-                       0.0f, 0.0f, 218.0f, 358.0f, 373.0f, 383.0f);
-    set_thresholds_eng(0x10u, SENSOR_THRESH_LNC | SENSOR_THRESH_UNC | SENSOR_THRESH_UC | SENSOR_THRESH_UNR,
-                       0.0f, 0.0f, 218.0f, 358.0f, 373.0f, 383.0f);
+    set_thresholds_eng(0x0Au, SENSOR_THRESH_UNC | SENSOR_THRESH_UC | SENSOR_THRESH_UNR, 0.0f, 0.0f, 0.0f, 4.0f, 5.0f, 6.0f);
+    set_thresholds_eng(0x0Bu, SENSOR_THRESH_UNC | SENSOR_THRESH_UC | SENSOR_THRESH_UNR, 0.0f, 0.0f, 0.0f, 8.8f, 12.0f, 16.0f);
+    set_thresholds_eng(0x0Cu, SENSOR_THRESH_UNC | SENSOR_THRESH_UC | SENSOR_THRESH_UNR, 0.0f, 0.0f, 0.0f, 4.4f, 6.0f, 8.0f);
+    set_thresholds_eng(0x0Du, SENSOR_THRESH_UNC | SENSOR_THRESH_UC | SENSOR_THRESH_UNR, 0.0f, 0.0f, 0.0f, 2.2f, 3.0f, 4.0f);
+    set_thresholds_eng(0x0Eu, SENSOR_THRESH_LNC | SENSOR_THRESH_UNC | SENSOR_THRESH_UC | SENSOR_THRESH_UNR, 0.0f, 0.0f, 218.0f, 358.0f, 373.0f, 383.0f);
+    set_thresholds_eng(0x0Fu, SENSOR_THRESH_LNC | SENSOR_THRESH_UNC | SENSOR_THRESH_UC | SENSOR_THRESH_UNR, 0.0f, 0.0f, 218.0f, 358.0f, 373.0f, 383.0f);
+    set_thresholds_eng(0x10u, SENSOR_THRESH_LNC | SENSOR_THRESH_UNC | SENSOR_THRESH_UC | SENSOR_THRESH_UNR, 0.0f, 0.0f, 218.0f, 358.0f, 373.0f, 383.0f);
 }
 
+/** @brief 初始化传感器数据库。 */
 void sensor_manager_init(void)
 {
     sensor_init_one(0, 0x01u, "FRU Health", 0xF2u, 0x04u, SENSOR_KIND_DISCRETE, 0, 1, 0, 0);
@@ -176,24 +176,18 @@ void sensor_manager_init(void)
 
     sensor_thresholds_init();
     sensor_manager_task_100ms();
+    APP_LOGI("sensor: init count=%u", SENSOR_COUNT);
 }
 
+/** @brief 写入 ADC 工程量。 */
 void sensor_set_adc_values(float vin_v, float v12, float v5, float v33, float vm12, float v28,
                            float iin, float i12, float i33, float i5, float temp_c)
 {
-    g_vin_v = vin_v;
-    g_v12_v = v12;
-    g_v5_v = v5;
-    g_v33_v = v33;
-    g_vm12_v = vm12;
-    g_v28_v = v28;
-    g_iin_a = iin;
-    g_i12_a = i12;
-    g_i33_a = i33;
-    g_i5_a = i5;
-    g_temp_c = temp_c;
+    g_vin_v = vin_v; g_v12_v = v12; g_v5_v = v5; g_v33_v = v33; g_vm12_v = vm12; g_v28_v = v28;
+    g_iin_a = iin; g_i12_a = i12; g_i33_a = i33; g_i5_a = i5; g_temp_c = temp_c;
 }
 
+/** @brief 根据阈值 mask 和 raw 读数计算 IPMI 阈值事件位。 */
 uint16_t sensor_calc_event(const ipmi_sensor_t *s)
 {
     uint16_t evt = 0u;
@@ -205,7 +199,7 @@ uint16_t sensor_calc_event(const ipmi_sensor_t *s)
     raw = (s->kind == SENSOR_KIND_ANALOG_S8) ? (int)((int8_t)s->raw_value) : (int)s->raw_value;
 
     if (s->sensor_id == 0x08u) {
-        /* -12V signed raw: less negative means undervoltage, more negative means overvoltage. */
+        /* -12V 使用 signed raw：数值越大表示绝对值越小，阈值方向与正电压相反。 */
         if ((s->threshold_mask & SENSOR_THRESH_LNC) && (raw >= (int)((int8_t)s->lnc))) evt |= IPMI_EVT_LNC_ASSERT;
         if ((s->threshold_mask & SENSOR_THRESH_LC)  && (raw >= (int)((int8_t)s->lc)))  evt |= IPMI_EVT_LC_ASSERT;
         if ((s->threshold_mask & SENSOR_THRESH_LNR) && (raw >= (int)((int8_t)s->lnr))) evt |= IPMI_EVT_LNR_ASSERT;
@@ -224,27 +218,18 @@ uint16_t sensor_calc_event(const ipmi_sensor_t *s)
     return evt;
 }
 
+/** @brief 100ms 刷新 raw 和 event。 */
 void sensor_manager_task_100ms(void)
 {
     float temp_k = g_temp_c + 273.15f;
+    uint8_t i;
 
-    g_sensors[3].eng_value = g_vin_v;
-    g_sensors[4].eng_value = g_v12_v;
-    g_sensors[5].eng_value = g_v5_v;
-    g_sensors[6].eng_value = g_v33_v;
-    g_sensors[7].eng_value = g_vm12_v;
-    g_sensors[8].eng_value = g_v28_v;
-    g_sensors[9].eng_value = g_iin_a;
-    g_sensors[10].eng_value = g_i12_a;
-    g_sensors[11].eng_value = g_i33_a;
-    g_sensors[12].eng_value = g_i5_a;
-    g_sensors[13].eng_value = temp_k;
-    g_sensors[14].eng_value = temp_k;
-    g_sensors[15].eng_value = temp_k;
-    g_sensors[16].eng_value = g_vin_v * g_iin_a;
-    g_sensors[17].eng_value = g_v12_v * g_i12_a;
-    g_sensors[18].eng_value = g_v33_v * g_i33_a;
-    g_sensors[19].eng_value = g_v5_v * g_i5_a;
+    g_sensors[3].eng_value = g_vin_v; g_sensors[4].eng_value = g_v12_v; g_sensors[5].eng_value = g_v5_v;
+    g_sensors[6].eng_value = g_v33_v; g_sensors[7].eng_value = g_vm12_v; g_sensors[8].eng_value = g_v28_v;
+    g_sensors[9].eng_value = g_iin_a; g_sensors[10].eng_value = g_i12_a; g_sensors[11].eng_value = g_i33_a;
+    g_sensors[12].eng_value = g_i5_a; g_sensors[13].eng_value = temp_k; g_sensors[14].eng_value = temp_k;
+    g_sensors[15].eng_value = temp_k; g_sensors[16].eng_value = g_vin_v * g_iin_a; g_sensors[17].eng_value = g_v12_v * g_i12_a;
+    g_sensors[18].eng_value = g_v33_v * g_i33_a; g_sensors[19].eng_value = g_v5_v * g_i5_a;
 
     g_sensors[0].event_status = sensor_get_fru_health_bits();
     g_sensors[1].event_status = sensor_get_fru_voltage_bits();
@@ -253,12 +238,13 @@ void sensor_manager_task_100ms(void)
     g_sensors[1].raw_value = (uint8_t)g_sensors[1].event_status;
     g_sensors[2].raw_value = (uint8_t)g_sensors[2].event_status;
 
-    for (uint8_t i = 3u; i < SENSOR_COUNT; i++) {
+    for (i = 3u; i < SENSOR_COUNT; i++) {
         g_sensors[i].raw_value = sensor_eng_to_raw(&g_sensors[i], g_sensors[i].eng_value);
         g_sensors[i].event_status = sensor_calc_event(&g_sensors[i]);
     }
 }
 
+/** @brief 按 Sensor ID 查找传感器。 */
 const ipmi_sensor_t *sensor_get(uint8_t sensor_id)
 {
     uint8_t i;
@@ -268,11 +254,13 @@ const ipmi_sensor_t *sensor_get(uint8_t sensor_id)
     return 0;
 }
 
+/** @brief 获取传感器数量。 */
 uint8_t sensor_get_count(void)
 {
     return SENSOR_COUNT;
 }
 
+/** @brief 生成 FRU Voltage 离散状态位。 */
 uint16_t sensor_get_fru_voltage_bits(void)
 {
     uint16_t bits = 0x0001u;
@@ -286,6 +274,7 @@ uint16_t sensor_get_fru_voltage_bits(void)
     return bits;
 }
 
+/** @brief 生成 FRU Temperature 离散状态位。 */
 uint16_t sensor_get_fru_temperature_bits(void)
 {
     uint16_t bits = 0x0001u;
@@ -295,6 +284,7 @@ uint16_t sensor_get_fru_temperature_bits(void)
     return bits;
 }
 
+/** @brief 生成 FRU Health 离散状态位。 */
 uint16_t sensor_get_fru_health_bits(void)
 {
     uint16_t bits = 0u;
