@@ -92,6 +92,63 @@ static void sensor_init_one(uint8_t idx, uint8_t id, const char *name, uint8_t t
     g_sensors[idx].r_exp = rexp;
     g_sensors[idx].b_exp = 0;
     g_sensors[idx].sensor_status = IPMI_SENSOR_STATUS_NORMAL;
+    g_sensors[idx].threshold_mask = 0u;
+    g_sensors[idx].lnr = 0u;
+    g_sensors[idx].lc = 0u;
+    g_sensors[idx].lnc = 0u;
+    g_sensors[idx].unc = 0u;
+    g_sensors[idx].uc = 0u;
+    g_sensors[idx].unr = 0u;
+}
+
+static ipmi_sensor_t *sensor_get_mutable(uint8_t sensor_id)
+{
+    uint8_t i;
+    for (i = 0u; i < SENSOR_COUNT; i++) {
+        if (g_sensors[i].sensor_id == sensor_id) return &g_sensors[i];
+    }
+    return 0;
+}
+
+static void set_thresholds_eng(uint8_t sensor_id, uint8_t mask,
+                               float lnr, float lc, float lnc, float unc, float uc, float unr)
+{
+    ipmi_sensor_t *s = sensor_get_mutable(sensor_id);
+    if (s == 0) return;
+
+    s->threshold_mask = mask;
+    if (mask & SENSOR_THRESH_LNR) s->lnr = sensor_eng_to_raw(s, lnr);
+    if (mask & SENSOR_THRESH_LC)  s->lc  = sensor_eng_to_raw(s, lc);
+    if (mask & SENSOR_THRESH_LNC) s->lnc = sensor_eng_to_raw(s, lnc);
+    if (mask & SENSOR_THRESH_UNC) s->unc = sensor_eng_to_raw(s, unc);
+    if (mask & SENSOR_THRESH_UC)  s->uc  = sensor_eng_to_raw(s, uc);
+    if (mask & SENSOR_THRESH_UNR) s->unr = sensor_eng_to_raw(s, unr);
+}
+
+static void sensor_thresholds_init(void)
+{
+    set_thresholds_eng(0x04u, SENSOR_THRESH_ALL, 9.0f, 10.0f, 12.0f, 36.0f, 38.0f, 40.0f);
+    set_thresholds_eng(0x05u, SENSOR_THRESH_ALL, 9.6f, 10.2f, 10.8f, 13.2f, 13.8f, 14.4f);
+    set_thresholds_eng(0x06u, SENSOR_THRESH_ALL, 4.0f, 4.25f, 4.5f, 5.5f, 5.75f, 6.0f);
+    set_thresholds_eng(0x07u, SENSOR_THRESH_ALL, 2.64f, 2.80f, 2.97f, 3.63f, 3.80f, 3.96f);
+    set_thresholds_eng(0x08u, SENSOR_THRESH_ALL, -9.6f, -10.2f, -10.8f, -13.2f, -13.8f, -14.4f);
+    set_thresholds_eng(0x09u, SENSOR_THRESH_ALL, 22.4f, 23.8f, 25.2f, 30.8f, 32.0f, 33.6f);
+
+    set_thresholds_eng(0x0Au, SENSOR_THRESH_UNC | SENSOR_THRESH_UC | SENSOR_THRESH_UNR,
+                       0.0f, 0.0f, 0.0f, 4.0f, 5.0f, 6.0f);
+    set_thresholds_eng(0x0Bu, SENSOR_THRESH_UNC | SENSOR_THRESH_UC | SENSOR_THRESH_UNR,
+                       0.0f, 0.0f, 0.0f, 8.8f, 12.0f, 16.0f);
+    set_thresholds_eng(0x0Cu, SENSOR_THRESH_UNC | SENSOR_THRESH_UC | SENSOR_THRESH_UNR,
+                       0.0f, 0.0f, 0.0f, 4.4f, 6.0f, 8.0f);
+    set_thresholds_eng(0x0Du, SENSOR_THRESH_UNC | SENSOR_THRESH_UC | SENSOR_THRESH_UNR,
+                       0.0f, 0.0f, 0.0f, 2.2f, 3.0f, 4.0f);
+
+    set_thresholds_eng(0x0Eu, SENSOR_THRESH_LNC | SENSOR_THRESH_UNC | SENSOR_THRESH_UC | SENSOR_THRESH_UNR,
+                       0.0f, 0.0f, 218.0f, 358.0f, 373.0f, 383.0f);
+    set_thresholds_eng(0x0Fu, SENSOR_THRESH_LNC | SENSOR_THRESH_UNC | SENSOR_THRESH_UC | SENSOR_THRESH_UNR,
+                       0.0f, 0.0f, 218.0f, 358.0f, 373.0f, 383.0f);
+    set_thresholds_eng(0x10u, SENSOR_THRESH_LNC | SENSOR_THRESH_UNC | SENSOR_THRESH_UC | SENSOR_THRESH_UNR,
+                       0.0f, 0.0f, 218.0f, 358.0f, 373.0f, 383.0f);
 }
 
 void sensor_manager_init(void)
@@ -117,6 +174,7 @@ void sensor_manager_init(void)
     sensor_init_one(18, 0x13u, "+3.3V Power", 0x0Bu, 0x01u, SENSOR_KIND_ANALOG_U8, UNIT_WATTS, 1, 0, 0);
     sensor_init_one(19, 0x14u, "+5V Power", 0x0Bu, 0x01u, SENSOR_KIND_ANALOG_U8, UNIT_WATTS, 1, 0, 0);
 
+    sensor_thresholds_init();
     sensor_manager_task_100ms();
 }
 
@@ -146,12 +204,23 @@ uint16_t sensor_calc_event(const ipmi_sensor_t *s)
 
     raw = (s->kind == SENSOR_KIND_ANALOG_S8) ? (int)((int8_t)s->raw_value) : (int)s->raw_value;
 
-    if ((s->lnc != 0u) && (raw <= (int)s->lnc)) evt |= IPMI_EVT_LNC_ASSERT;
-    if ((s->lc != 0u) && (raw <= (int)s->lc)) evt |= IPMI_EVT_LC_ASSERT;
-    if ((s->lnr != 0u) && (raw <= (int)s->lnr)) evt |= IPMI_EVT_LNR_ASSERT;
-    if ((s->unc != 0u) && (raw >= (int)s->unc)) evt |= IPMI_EVT_UNC_ASSERT;
-    if ((s->uc != 0u) && (raw >= (int)s->uc)) evt |= IPMI_EVT_UC_ASSERT;
-    if ((s->unr != 0u) && (raw >= (int)s->unr)) evt |= IPMI_EVT_UNR_ASSERT;
+    if (s->sensor_id == 0x08u) {
+        /* -12V signed raw: less negative means undervoltage, more negative means overvoltage. */
+        if ((s->threshold_mask & SENSOR_THRESH_LNC) && (raw >= (int)((int8_t)s->lnc))) evt |= IPMI_EVT_LNC_ASSERT;
+        if ((s->threshold_mask & SENSOR_THRESH_LC)  && (raw >= (int)((int8_t)s->lc)))  evt |= IPMI_EVT_LC_ASSERT;
+        if ((s->threshold_mask & SENSOR_THRESH_LNR) && (raw >= (int)((int8_t)s->lnr))) evt |= IPMI_EVT_LNR_ASSERT;
+        if ((s->threshold_mask & SENSOR_THRESH_UNC) && (raw <= (int)((int8_t)s->unc))) evt |= IPMI_EVT_UNC_ASSERT;
+        if ((s->threshold_mask & SENSOR_THRESH_UC)  && (raw <= (int)((int8_t)s->uc)))  evt |= IPMI_EVT_UC_ASSERT;
+        if ((s->threshold_mask & SENSOR_THRESH_UNR) && (raw <= (int)((int8_t)s->unr))) evt |= IPMI_EVT_UNR_ASSERT;
+        return evt;
+    }
+
+    if ((s->threshold_mask & SENSOR_THRESH_LNC) && (raw <= (int)s->lnc)) evt |= IPMI_EVT_LNC_ASSERT;
+    if ((s->threshold_mask & SENSOR_THRESH_LC)  && (raw <= (int)s->lc))  evt |= IPMI_EVT_LC_ASSERT;
+    if ((s->threshold_mask & SENSOR_THRESH_LNR) && (raw <= (int)s->lnr)) evt |= IPMI_EVT_LNR_ASSERT;
+    if ((s->threshold_mask & SENSOR_THRESH_UNC) && (raw >= (int)s->unc)) evt |= IPMI_EVT_UNC_ASSERT;
+    if ((s->threshold_mask & SENSOR_THRESH_UC)  && (raw >= (int)s->uc))  evt |= IPMI_EVT_UC_ASSERT;
+    if ((s->threshold_mask & SENSOR_THRESH_UNR) && (raw >= (int)s->unr)) evt |= IPMI_EVT_UNR_ASSERT;
     return evt;
 }
 
