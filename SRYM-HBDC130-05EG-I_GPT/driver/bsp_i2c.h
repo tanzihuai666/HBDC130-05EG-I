@@ -14,6 +14,7 @@ void bsp_i2c1_ipmb_init(uint8_t own_addr_7bit);
 void bsp_i2c1_register_rx_callback(bsp_i2c_rx_callback_t cb);
 bool bsp_i2c1_master_write(uint8_t dest_addr_7bit, const uint8_t *data, uint8_t len);
 void bsp_i2c1_recover_bus(void);
+uint32_t bsp_i2c1_get_error_count(void);
 void I2C1_EV_IRQHandler(void);
 void I2C1_ER_IRQHandler(void);
 
