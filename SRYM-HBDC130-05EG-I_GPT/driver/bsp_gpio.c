@@ -44,9 +44,9 @@ void bsp_gpio_init(void)
 
     gpio.GPIO_Speed = GPIO_SPEED_50MHZ;
 
-    /* Control inputs: PB9 NVMRO, PB13 EN, PB14 INH, PB15 SYSRESET input/output default input. */
+    /* Control inputs: PB8 PWOUT_TEST, PB9 NVMRO, PB13 EN, PB14 INH, PB15 SYSRESET default input. */
     gpio.GPIO_Mode = GPIO_MODE_IN_FLOATING;
-    gpio.GPIO_Pin = GPIO_PIN_9 | GPIO_PIN_13 | GPIO_PIN_14 | GPIO_PIN_15;
+    gpio.GPIO_Pin = GPIO_PIN_8 | GPIO_PIN_9 | GPIO_PIN_13 | GPIO_PIN_14 | GPIO_PIN_15;
     GPIO_Init(GPIOB, &gpio);
 
     /* GA inputs: PC7/PC8/PA8. */
@@ -55,7 +55,7 @@ void bsp_gpio_init(void)
     gpio.GPIO_Pin = GPIO_PIN_8;
     GPIO_Init(GPIOA, &gpio);
 
-    /* SYNC input PA11. */
+    /* SYNC input PA11. Logic is reserved for later; pin is only made safe here. */
     gpio.GPIO_Pin = GPIO_PIN_11;
     GPIO_Init(GPIOA, &gpio);
 
