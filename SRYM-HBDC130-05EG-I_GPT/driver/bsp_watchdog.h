@@ -1,17 +1,25 @@
 /**
  * @file    bsp_watchdog.h
- * @brief   Independent watchdog interface.
+ * @brief   独立看门狗 IWDG 板级接口。
  * @author  GPT
- * @date    2026-06-12
- * @version V0.3
+ * @date    2026-06-15
+ * @version V0.4
  */
 #ifndef BSP_WATCHDOG_H
 #define BSP_WATCHDOG_H
 
-/** @brief Initialize IWDG. @param None. @retval None. */
+/**
+ * @brief  配置并启动独立看门狗。
+ * @param  无。
+ * @retval 无。
+ */
 void bsp_watchdog_init(void);
 
-/** @brief Reload IWDG counter. @param None. @retval None. */
+/**
+ * @brief  重装独立看门狗计数器。
+ * @param  无。
+ * @retval 无。
+ */
 void bsp_watchdog_feed(void);
 
 #endif
